@@ -2,7 +2,7 @@ use eframe::egui;
 use image::{ImageBuffer, Rgba};
 use once_cell::sync::OnceCell;
 use scap::{capturer::{Capturer, Options, Resolution, Area, Point, Size},
-           frame::{FrameType},
+           frame::{FrameType, Frame},
 };
 use std::{process, sync::Mutex};
 
@@ -41,6 +41,7 @@ fn main() {
         Ok(()) => {},
         Err(e) => eprintln!("Application Failed to start: {}", e),
     };
+    std::thread::sleep(std::time::Duration::from_secs(10));
 }
 
 /*
@@ -52,8 +53,8 @@ impl Default for MyEguiApp {
     }
 }*/
 
-fn init_capturer() -> Capturer {
-    Capturer::new(
+fn init_capturer() -> Option<Capturer> {
+    match Capturer::build(
         Options {
             fps: 1,
             target: None, //Primary display
@@ -65,12 +66,22 @@ fn init_capturer() -> Capturer {
             crop_area: None,
             ..Default::default()
         }
-    ).with_backend("x11")
+    ) {
+        Ok(cap) => {
+            println!("AAAAA");
+            Some(cap)
+        } Err(e) => {
+            println!("AAAAA");
+            eprintln!("Failed to build capturer: {:?}", e);
+            None
+        }
+    }
+    
 }
 
 #[derive(Default)]
 struct MyEguiApp {
-    capturer: Option<Capturer>,
+    capturer: Option<Mutex<Capturer>>,
 }
 
 impl MyEguiApp {
@@ -79,38 +90,49 @@ impl MyEguiApp {
         visuals.window_fill = egui::Color32::TRANSPARENT;
         visuals.widgets.noninteractive.bg_fill = egui::Color32::TRANSPARENT;
         cc.egui_ctx.set_visuals(visuals);
-        Self::default()
+
+        Self {
+            capturer: init_capturer().map(Mutex::new),
+        }
     }
 }
 
 impl eframe::App for MyEguiApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, uiframe: &mut eframe::Frame) {
+        println!("UPDATE");
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-                ui.heading("Hello World!");
-                let capturer = CAPTURER.get_or_init(
-                    || Mutex::new(init_capturer())
-                );
+                  ui.heading("Hello World!");
                 if ui.button("Capture").clicked() {
                     println!("Screen captured");
-                    /*self.capturer.as_mut().lock().unwrap().start_capture();
-                    if let Some(frame) = capturer.get_Frame() {
-                        let width = frame.width();
-                        let height = frame.height();
-                        let buffer = frame.buffer();
-                        let image: ImageBuffer<Rgba<u8>, _> =
-                            ImageBuffer::from_fn(width, height, |x, y| {
-                                let i = ((y * width + x) * 4) as usize;
-                                let b = buffer[i];
-                                let g = buffer[i+1];
-                                let r = buffer[i+2];
-                                let a = buffer[i+3];
-                                Rgba([r, g, b, a])
-                            });
-                        let _ = image.save("/app/workdir/image.png");
-                    };
-                    capturer.stop_capture();*/
+                    if let Some(capturer_mutex) = &self.capturer {
+                        let mut capturer = capturer_mutex.lock().unwrap();
+                        capturer.start_capture();
+                        if let Ok(frame) = capturer.get_next_frame() {
+                            match frame {
+                                Frame::BGRA(frame_data) => {
+                                    let width: u32 = frame_data.width
+                                        .try_into().unwrap();
+                                    let height: u32 = frame_data.height
+                                        .try_into().unwrap();
+                                    let buffer = frame_data.data;
+                                    let image: ImageBuffer<Rgba<u8>, _> =
+                                        ImageBuffer::from_fn(width, height, |x, y| {
+                                            let i = ((y * width + x) * 4) as usize;
+                                            let b = buffer[i];
+                                            let g = buffer[i+1];
+                                            let r = buffer[i+2];
+                                            let a = buffer[i+3];
+                                            Rgba([r, g, b, a])
+                                        });
+                                    let _ = image.save("/app/workdir/image.png");
+                                },
+                                _ => println!("Not a BGRA frame"),
+                            }
+                        } else {eprintln!("Failed to receive frame")};
+                        capturer.stop_capture();
+                    }
                 }
                 if ui.button("Close").clicked() {
                     println!("Exiting");
@@ -123,5 +145,3 @@ impl eframe::App for MyEguiApp {
         );
     }
 }
-
-static CAPTURER: OnceCell<Mutex<Capturer>> = OnceCell::new();
